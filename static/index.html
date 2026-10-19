@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101827">
+    <meta name="description"
+          content="OpsPulse website uptime monitoring and performance dashboard.">
+
+    <title>OpsPulse — Monitoring Overview</title>
+
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+</head>
+
+<body>
+<div class="app-shell">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <a class="brand" href="#overview" aria-label="OpsPulse home">
+            <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 40 40" fill="none">
+                    <rect width="40" height="40" rx="12" fill="#20C8AA"/>
+                    <path d="M7 21H13L17 12L23 28L27 19H33"
+                          stroke="#09251F"
+                          stroke-width="2.8"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"/>
+                </svg>
+            </span>
+            <span class="brand-copy">
+                <strong>OpsPulse</strong>
+                <small>OBSERVABILITY</small>
+            </span>
+        </a>
+
+        <div class="workspace-label">WORKSPACE</div>
+
+        <nav class="sidebar-nav" aria-label="Main navigation">
+            <a class="nav-link active" href="#overview">
+                <span class="nav-icon" aria-hidden="true">▦</span>
+                <span>Overview</span>
+            </a>
+
+            <a class="nav-link" href="#monitors">
+                <span class="nav-icon" aria-hidden="true">◎</span>
+                <span>Monitors</span>
+                <span class="nav-count" id="sidebar-monitor-count">0</span>
+            </a>
+
+            <a class="nav-link" href="#performance">
+                <span class="nav-icon" aria-hidden="true">⌁</span>
+                <span>Performance</span>
+            </a>
+
+            <a class="nav-link" href="#activity">
+                <span class="nav-icon" aria-hidden="true">◷</span>
+                <span>Check history</span>
+            </a>
+
+            <a class="nav-link"
+               href="/docs"
+               target="_blank"
+               rel="noopener noreferrer">
+                <span class="nav-icon" aria-hidden="true">⌘</span>
+                <span>API explorer</span>
+                <span class="external-mark" aria-hidden="true">↗</span>
+            </a>
+        </nav>
+
+        <div class="sidebar-bottom">
+            <div class="workspace-card">
+                <span class="workspace-status-dot"></span>
+                <div>
+                    <strong>Local workspace</strong>
+                    <small>Your monitoring data stays in SQLite</small>
+                </div>
+            </div>
+
+            <div class="sidebar-version">
+                <span>OPSPULSE</span>
+                <span>VERSION 1.0</span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="main-content">
+
+        <header class="topbar">
+            <div class="breadcrumbs">
+                <span>WORKSPACE</span>
+                <span class="breadcrumb-separator">/</span>
+                <strong>OVERVIEW</strong>
+            </div>
+
+            <div class="topbar-actions">
+                <div class="api-indicator" id="api-status">
+                    <span class="api-indicator-dot"></span>
+                    <span id="api-status-label">Connecting to API...</span>
+                </div>
+
+                <button
+                    class="icon-button"
+                    id="refresh-button"
+                    type="button"
+                    title="Refresh dashboard"
+                    aria-label="Refresh dashboard">
+                    ↻
+                </button>
+
+                <div class="user-avatar" title="Local workspace">OP</div>
+            </div>
+        </header>
+
+        <div class="page-content">
+
+            <!-- Page heading -->
+            <section class="page-heading" id="overview">
+                <div class="heading-copy">
+                    <div class="eyebrow">
+                        <span class="eyebrow-line"></span>
+                        YOUR MONITORING COMMAND CENTER
+                    </div>
+
+                    <h1>Monitoring overview<span>.</span></h1>
+
+                    <p>
+                        Know what's healthy, catch what isn't,
+                        and keep every endpoint in check.
+                    </p>
+                </div>
+
+                <div class="heading-actions">
+                    <button
+                        class="button button-secondary"
+                        id="check-all-button"
+                        type="button">
+                        <span aria-hidden="true">↻</span>
+                        Check all
+                    </button>
+
+                    <button
+                        class="button button-primary"
+                        id="add-monitor-button"
+                        type="button">
+                        <span aria-hidden="true">＋</span>
+                        Add monitor
+                    </button>
+                </div>
+            </section>
+
+            <!-- KPI cards -->
+            <section class="metrics-grid" aria-label="Monitoring statistics">
+
+                <article class="metric-card">
+                    <div class="metric-top">
+                        <span class="metric-label">TOTAL MONITORS</span>
+                        <span class="metric-icon metric-icon-purple">◎</span>
+                    </div>
+                    <div class="metric-number" id="metric-total">—</div>
+                    <div class="metric-foot">
+                        Websites tracked by OpsPulse
+                    </div>
+                </article>
+
+                <article class="metric-card">
+                    <div class="metric-top">
+                        <span class="metric-label">OPERATIONAL</span>
+                        <span class="metric-icon metric-icon-green">✓</span>
+                    </div>
+                    <div class="metric-number" id="metric-up">—</div>
+                    <div class="metric-foot">
+                        <span class="inline-status-dot status-up-dot"></span>
+                        Reporting a successful latest check
+                    </div>
+                </article>
+
+                <article class="metric-card">
+                    <div class="metric-top">
+                        <span class="metric-label">NEEDS ATTENTION</span>
+                        <span class="metric-icon metric-icon-red">!</span>
+                    </div>
+                    <div class="metric-number" id="metric-down">—</div>
+                    <div class="metric-foot">
+                        Most recent check was unsuccessful
+                    </div>
+                </article>
+
+                <article class="metric-card">
+                    <div class="metric-top">
+                        <span class="metric-label">AVG. RESPONSE TIME</span>
+                        <span class="metric-icon metric-icon-blue">◷</span>
+                    </div>
+                    <div class="metric-number" id="metric-latency">—</div>
+                    <div class="metric-foot">
+                        Average across checks in the last 24 hours
+                    </div>
+                </article>
+
+            </section>
+
+            <!-- Monitor list -->
+            <section class="panel monitors-panel" id="monitors">
+
+                <div class="panel-heading">
+                    <div>
+                        <div class="section-overline">YOUR INFRASTRUCTURE</div>
+                        <h2>Website monitors</h2>
+                        <p class="panel-description">
+                            Manage endpoints and inspect their latest health.
+                        </p>
+                    </div>
+
+                    <span class="count-badge" id="monitor-count-badge">0 monitors</span>
+                </div>
+
+                <div class="toolbar">
+                    <label class="search-box">
+                        <span class="search-icon" aria-hidden="true">⌕</span>
+                        <input
+                            type="search"
+                            id="monitor-search"
+                            placeholder="Search websites..."
+                            autocomplete="off"
+                            aria-label="Search websites">
+                        <kbd>⌘ / Ctrl K</kbd>
+                    </label>
+
+                    <label class="filter-box">
+                        <span class="filter-label">STATUS</span>
+                        <select id="status-filter" aria-label="Filter monitors by status">
+                            <option value="all">All monitors</option>
+                            <option value="up">Operational</option>
+                            <option value="down">Down</option>
+                            <option value="unknown">Not checked</option>
+                            <option value="paused">Paused</option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="table-scroll" id="monitor-table-wrap">
+                    <table class="data-table monitor-table">
+                        <thead>
+                        <tr>
+                            <th>MONITOR</th>
+                            <th>STATUS</th>
+                            <th>RESPONSE</th>
+                            <th>24H UPTIME</th>
+                            <th>INTERVAL</th>
+                            <th class="actions-column">ACTIONS</th>
+                        </tr>
+                        </thead>
+                        <tbody id="monitor-rows">
+                        <tr>
+                            <td colspan="6" class="loading-cell">
+                                Connecting to OpsPulse...
+                            </td>
+                        </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="empty-state hidden" id="monitor-empty">
+                    <div class="empty-icon" aria-hidden="true">◎</div>
+                    <h3 id="monitor-empty-title">No monitors yet</h3>
+                    <p id="monitor-empty-text">
+                        Add a public website to start collecting uptime data.
+                    </p>
+                    <button
+                        class="button button-primary"
+                        id="add-monitor-empty"
+                        type="button">
+                        ＋ Add your first monitor
+                    </button>
+                </div>
+
+                <div class="panel-footer">
+                    <span id="monitor-table-summary">Loading monitors...</span>
+                    <span class="subtle-label">
+                        <span class="inline-status-dot status-up-dot"></span>
+                        Automatic checks enabled for active monitors
+                    </span>
+                </div>
+
+            </section>
+
+            <!-- Performance chart and selected-monitor snapshot -->
+            <section class="analytics-grid" id="performance">
+
+                <article class="panel chart-panel">
+                    <div class="panel-heading chart-heading">
+                        <div>
+                            <div class="section-overline">PERFORMANCE ANALYTICS</div>
+                            <h2>Response time</h2>
+                            <p class="panel-description">
+                                Historical latency for the selected monitor.
+                            </p>
+                        </div>
+
+                        <label class="chart-select-wrap">
+                            <span class="sr-only">Select monitor for response-time chart</span>
+                            <select id="selected-monitor-select"
+                                    aria-label="Select monitor for response-time chart">
+                                <option value="">No monitors available</option>
+                            </select>
+                        </label>
+                    </div>
+
+                    <div class="chart-summary">
+                        <div>
+                            <div class="chart-big-number" id="chart-latest-latency">—</div>
+                            <div class="chart-subtext">
+                                Latest measured response
+                            </div>
+                        </div>
+
+                        <div class="chart-legend">
+                            <span class="legend-dot"></span>
+                            Response time (ms)
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <svg
+                            id="latency-chart"
+                            viewBox="0 0 900 270"
+                            preserveAspectRatio="none"
+                            role="img"
+                            aria-label="Historical website response-time chart">
+                            <text x="450" y="130" text-anchor="middle">
+                                Waiting for monitoring data...
+                            </text>
+                        </svg>
+                    </div>
+
+                    <div class="chart-footer">
+                        <span id="chart-check-count">No checks recorded yet</span>
+                        <span id="chart-time-range">Recent check history</span>
+                    </div>
+                </article>
+
+                <article class="panel snapshot-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <div class="section-overline">LIVE SNAPSHOT</div>
+                            <h2>Monitor health</h2>
+                        </div>
+                        <span class="snapshot-pulse" aria-hidden="true"></span>
+                    </div>
+
+                    <div id="snapshot-content">
+                        <div class="snapshot-identity">
+                            <div class="snapshot-favicon" aria-hidden="true">◎</div>
+                            <div class="snapshot-name-wrap">
+                                <h3 id="snapshot-name">No monitor selected</h3>
+                                <a id="snapshot-url" href="#monitors">Add a website to begin</a>
+                            </div>
+                        </div>
+
+                        <div class="snapshot-status-row">
+                            <span class="muted-label">CURRENT STATUS</span>
+                            <span class="status-pill unknown" id="snapshot-status">
+                                Not checked
+                            </span>
+                        </div>
+
+                        <div class="uptime-block">
+                            <div class="uptime-title-row">
+                                <span>24-hour uptime</span>
+                                <strong id="snapshot-uptime">—</strong>
+                            </div>
+                            <div class="progress-track">
+                                <div id="snapshot-uptime-fill"
+                                     class="progress-fill"
+                                     style="width: 0%"></div>
+                            </div>
+                            <div class="uptime-caption">
+                                Based on recorded check results
+                            </div>
+                        </div>
+
+                        <div class="snapshot-details">
+                            <div class="detail-row">
+                                <span>Last checked</span>
+                                <strong id="snapshot-lastchecked">Never</strong>
+                            </div>
+                            <div class="detail-row">
+                                <span>HTTP status</span>
+                                <strong id="snapshot-http">—</strong>
+                            </div>
+                            <div class="detail-row">
+                                <span>Response time</span>
+                                <strong id="snapshot-latency">—</strong>
+                            </div>
+                            <div class="detail-row">
+                                <span>Check interval</span>
+                                <strong id="snapshot-interval">—</strong>
+                            </div>
+                        </div>
+
+                        <button
+                            class="button button-secondary button-full"
+                            id="snapshot-check-button"
+                            type="button"
+                            disabled>
+                            ↻ Check selected website
+                        </button>
+                    </div>
+                </article>
+
+            </section>
+
+            <!-- Recent activity -->
+            <section class="panel activity-panel" id="activity">
+                <div class="panel-heading">
+                    <div>
+                        <div class="section-overline">MONITORING TIMELINE</div>
+                        <h2>Recent check activity</h2>
+                        <p class="panel-description">
+                            The latest recorded results across your monitors.
+                        </p>
+                    </div>
+
+                    <button
+                        class="text-button"
+                        id="activity-refresh-button"
+                        type="button">
+                        ↻ Refresh
+                    </button>
+                </div>
+
+                <div class="table-scroll">
+                    <table class="data-table activity-table">
+                        <thead>
+                        <tr>
+                            <th>RESULT</th>
+                            <th>MONITOR</th>
+                            <th>CHECKED AT</th>
+                            <th>HTTP CODE</th>
+                            <th>RESPONSE TIME</th>
+                        </tr>
+                        </thead>
+                        <tbody id="activity-rows">
+                        <tr>
+                            <td colspan="5" class="loading-cell">
+                                Loading recent checks...
+                            </td>
+                        </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="activity-empty hidden" id="activity-empty">
+                    Check results will appear here once your monitors have run.
+                </div>
+
+            </section>
+
+            <footer class="page-footer">
+                <span>OpsPulse <span class="footer-separator">/</span> Local monitoring workspace</span>
+                <span id="last-updated">Waiting for first refresh</span>
+            </footer>
+
+        </div>
+    </main>
+</div>
+
+<!-- Add monitor dialog -->
+<dialog class="modal" id="add-monitor-dialog">
+    <form id="add-monitor-form">
+        <div class="modal-heading">
+            <div>
+                <div class="section-overline">NEW ENDPOINT</div>
+                <h2>Add a monitor</h2>
+                <p>Configure a public website to start tracking availability.</p>
+            </div>
+
+            <button
+                class="icon-button modal-close"
+                id="close-monitor-dialog"
+                type="button"
+                aria-label="Close dialog">×</button>
+        </div>
+
+        <div class="form-fields">
+            <label class="form-label" for="new-monitor-name">
+                Monitor name
+                <input
+                    id="new-monitor-name"
+                    name="name"
+                    type="text"
+                    placeholder="e.g. My Portfolio"
+                    minlength="1"
+                    maxlength="80"
+                    required>
+                <span class="field-hint">
+                    Choose a recognizable name for your dashboard.
+                </span>
+            </label>
+
+            <label class="form-label" for="new-monitor-url">
+                Website URL
+                <input
+                    id="new-monitor-url"
+                    name="url"
+                    type="url"
+                    placeholder="https://example.com"
+                    maxlength="2048"
+                    required>
+                <span class="field-hint">
+                    Include https:// or http://.
+                </span>
+            </label>
+
+            <label class="form-label" for="new-monitor-interval">
+                Check interval
+                <select id="new-monitor-interval"
+                        name="interval_seconds"
+                        required>
+                    <option value="30">Every 30 seconds</option>
+                    <option value="60" selected>Every 1 minute</option>
+                    <option value="300">Every 5 minutes</option>
+                    <option value="900">Every 15 minutes</option>
+                    <option value="3600">Every 60 minutes</option>
+                </select>
+                <span class="field-hint">
+                    The scheduler checks active monitors at this interval.
+                </span>
+            </label>
+        </div>
+
+        <div class="form-notice">
+            <span aria-hidden="true">ⓘ</span>
+            Monitor websites you own or are authorized to check.
+            Use publicly accessible HTTP or HTTPS endpoints.
+        </div>
+
+        <div class="modal-actions">
+            <button
+                class="button button-secondary"
+                id="cancel-monitor-button"
+                type="button">Cancel</button>
+
+            <button
+                class="button button-primary"
+                id="save-monitor-button"
+                type="submit">Create monitor</button>
+        </div>
+    </form>
+</dialog>
+
+<!-- Toast notifications -->
+<div class="toast-container" id="toast-container"
+     aria-live="polite" aria-atomic="true"></div>
+
+</body>
+</html>
