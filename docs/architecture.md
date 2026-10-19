@@ -3,16 +3,16 @@
 
 ## 1. Overview
 
-OpsPulse is a small, local-first web application for monitoring public HTTP and HTTPS endpoints.
+OpsPulse is a local-first web application that monitors public HTTP and HTTPS endpoints.
 
-It has four main components:
+The application has four primary components:
 
 1. A browser-based dashboard.
 2. A FastAPI application exposing a REST API.
 3. A SQLite database storing monitors and historical checks.
-4. A background scheduler that triggers checks for active monitors.
+4. An in-process scheduler that starts checks for active monitors.
 
-The dashboard and API are served by the same application.
+The browser and API are served by the same application process.
 
 ## 2. System Diagram
 
@@ -42,16 +42,16 @@ The dashboard and API are served by the same application.
             +---------------+          |
                                        | HTTP(S)
                                        v
-                              Public Website or API
+                               Public Website or API
 ```
 
 ## 3. Frontend
 
-The frontend lives in `static/`.
+The frontend is located in `static/`.
 
 ### `index.html`
 
-Defines the dashboard structure, including:
+Defines the dashboard interface, including:
 
 - Statistics cards
 - Monitor table
@@ -63,45 +63,85 @@ Defines the dashboard structure, including:
 
 ### `styles.css`
 
-Provides layout, colors, responsive behavior, status indicators, and visual states.
+Provides layout, colors, responsive behavior, status indicators, and component styling.
 
 ### `app.js`
 
-Calls the API using `fetch`, renders monitor data, manages dashboard interactions, and displays notifications.
+Uses the browser Fetch API to communicate with FastAPI, render monitor data, control dashboard interactions, and display notifications.
 
-The browser does not directly open the SQLite database. It receives JSON responses from FastAPI.
+The browser does not access SQLite directly. It receives data through the API.
 
 ## 4. Backend
 
-`main.py` defines the application routes, data models, monitoring engine, scheduler, and database operations.
+`main.py` defines the application routes, request models, database helpers, monitoring engine, outbound connection safeguards, and scheduler.
 
 ### Request validation
 
-Pydantic models validate incoming monitor data, including names, URL formats, and allowed check intervals.
+Pydantic models validate submitted monitor names, URL formats, and allowed check intervals.
 
 ### API handlers
 
-FastAPI routes handle monitor CRUD operations, dashboard statistics, check-history retrieval, and manual checks.
+FastAPI routes manage monitors, return dashboard statistics, expose check history, and trigger manual checks.
 
 ### Monitoring engine
 
-`run_check()` retrieves the monitor configuration, applies destination checks, sends an HTTP request, measures elapsed time, and records the outcome.
+`run_check()` performs these operations:
 
-The current implementation does not follow redirects. HTTP status codes from 200 through 399 are classified as successful reachability results.
+1. Retrieve the monitor configuration.
+2. Record a timestamp and start time.
+3. Validate and resolve the destination.
+4. Reject non-global IP addresses.
+5. Use a pinned connection to contact the selected IP.
+6. Record the HTTP status or error.
+7. Calculate elapsed response time.
+8. Save the check in SQLite.
+9. Update the monitor's latest result.
 
-### Background scheduler
+Manual and scheduled checks share the same monitoring function.
 
-The scheduler periodically searches for active monitors whose configured intervals have elapsed. It invokes checks in worker threads so blocking network calls do not directly block the scheduler's event loop.
+## 5. Outbound Connection Safety
 
-The scheduler is process-local. A multi-worker deployment would require a different design to prevent duplicate scheduled checks.
+### Destination validation
 
-## 5. Database Model
+`validate_public_destination()` resolves a URL's hostname and checks the resulting IP addresses.
 
-The application uses SQLite.
+The current policy rejects:
+
+- Loopback addresses
+- Private network addresses
+- Link-local and other non-global addresses
+- Hostnames associated with local or internal environments
+- Non-standard HTTP and HTTPS ports
+
+The function rejects the hostname if any returned DNS address is non-global.
+
+### IP-pinned connections
+
+A conventional HTTP client can resolve a hostname once during validation and again during connection. If the DNS answer changes between those operations, the application could contact a different destination from the one validated.
+
+OpsPulse reduces this risk by passing a validated IP address to `PinnedHTTPConnection` or `PinnedHTTPSConnection`. These classes establish the TCP connection to that address instead of resolving the original hostname again.
+
+### HTTPS hostname verification
+
+For HTTPS, the TCP connection goes to the pinned IP address, while TLS uses the original hostname for Server Name Indication and certificate hostname verification.
+
+This preserves ordinary certificate verification while separating the network destination from the hostname used by TLS.
+
+### Redirect behavior
+
+The monitoring engine makes a single GET request and does not automatically follow redirects. A redirect response is recorded according to the application's reachability rule rather than causing a second request to an unvalidated destination.
+
+### Important limitation
+
+These are useful defensive controls, but they are not a comprehensive security boundary. A publicly operated monitoring service also needs network-level outbound restrictions, authorization, rate limits, concurrency controls, independent security testing, and careful handling of DNS and socket behavior.
+
+## 6. Database Model
+
+OpsPulse uses SQLite.
 
 ### `monitors`
 
-Stores the latest configuration and result for each monitored endpoint.
+Stores each monitor's configuration and latest status.
 
 Important fields include:
 
@@ -110,112 +150,129 @@ Important fields include:
 - `url`: monitored address
 - `created_at`: creation timestamp
 - `active`: whether automatic monitoring is enabled
-- `interval_seconds`: configured check frequency
+- `interval_seconds`: configured check interval
 - `last_checked_at`: most recent check timestamp
-- `last_status_code`: most recent HTTP status
-- `last_latency_ms`: most recent measured latency
-- `last_success`: outcome of the most recent check
-- `last_error`: error information when applicable
+- `last_status_code`: latest HTTP status
+- `last_latency_ms`: latest measured latency
+- `last_success`: latest result
+- `last_error`: latest error information
 
 ### `checks`
 
-Stores one historical record per attempt.
+Stores one historical row for each attempt.
 
 Important fields include:
 
 - `id`: primary key
 - `monitor_id`: related monitor
 - `checked_at`: check timestamp
-- `status_code`: HTTP status, when available
-- `latency_ms`: measured elapsed time
-- `success`: whether the check met the application's success rule
-- `error`: recorded error details, when applicable
+- `status_code`: HTTP status when a response is received
+- `latency_ms`: elapsed request time
+- `success`: result according to the application's HTTP-status rule
+- `error`: recorded error message, if applicable
 
-Each check references a monitor. Deleting a monitor also deletes its associated checks through the database's foreign-key cascade.
+Each check references a monitor. The foreign-key cascade deletes associated history when its monitor is removed.
 
 ### Indexes
 
-Indexes support looking up a monitor's most recent check history and retrieving recent checks efficiently.
+Indexes support lookups of monitor-specific check history and recent check records.
 
-## 6. Check Lifecycle
+## 7. Monitoring Scheduler
 
-A check follows these steps:
+The scheduler repeatedly looks for active monitors that are due for a check.
 
-1. Load the monitor from SQLite.
-2. Record the start time.
-3. Validate the destination's resolved IP addresses.
-4. Send an HTTP request with a finite timeout and without automatic redirect following.
-5. Classify the response or record the error.
-6. Calculate elapsed time.
-7. Insert a historical check record.
-8. Update the monitor's latest status fields.
-9. Return the result to the API caller.
+A monitor is due when it has never been checked or its configured interval has elapsed since the previous check.
 
-Scheduled checks and manual checks use the same monitoring function.
+Blocking network requests run through worker threads so that they do not directly block the scheduler's event loop.
 
-## 7. Uptime Calculation
+The scheduler is process-local. Running multiple application workers can start duplicate schedulers. A larger deployment should use a separate scheduler or persistent job queue with coordination between workers.
 
-For a monitor, the application selects checks recorded within the last 24 hours.
+## 8. Uptime Calculation
+
+The application calculates uptime from checks recorded during the preceding 24 hours.
 
 ```text
 Uptime percentage =
-    successful checks / total checks * 100
+    successful checks / total recorded checks * 100
 ```
 
-When there are no check records within that period, uptime is returned as `null` and displayed as unavailable.
+If no checks exist in the period, the uptime result is `null` and the dashboard displays an unavailable value.
 
-This is based on the checks that were actually recorded. It cannot establish availability during periods before monitoring began or during gaps in data collection.
+This is an estimate based on recorded check attempts. It does not establish availability before monitoring began or during periods when no checks were recorded.
 
-## 8. API and Browser Interaction
+## 9. API and Browser Interaction
 
-The dashboard retrieves:
+The dashboard uses the following endpoints:
 
 - `/api/health` for application and database health
 - `/api/stats` for dashboard metrics
-- `/api/monitors` for monitor records
-- `/api/monitors/{id}/checks` for monitor history
+- `/api/monitors` to list or create monitors
+- `/api/monitors/{id}` to retrieve, update, or delete a monitor
+- `/api/monitors/{id}/check` to initiate a check
+- `/api/monitors/{id}/checks` to retrieve history
 
-It creates monitors through `POST`, updates them through `PATCH`, and deletes them through `DELETE`.
+The `/docs` route provides interactive API documentation while the server is running.
 
-Manual checks use `POST /api/monitors/{id}/check`.
-
-The `/docs` page exposes interactive API documentation while the server is running.
-
-## 9. Testing Strategy
+## 10. Testing Strategy
 
 `test_main.py` uses pytest and FastAPI's test client.
 
-Tests override the database path with a temporary file and replace the scheduler with an idle task. This isolates test data from the local database and avoids background checks interfering with test assertions.
+The test fixture:
 
-Network results are mocked for deterministic success and HTTP-failure tests. The suite also verifies static-file delivery, API validation, database persistence, statistics, deletion behavior, and local-address rejection.
+- Overrides the SQLite path with a temporary database.
+- Replaces the background scheduler with an idle coroutine.
+- Prevents test data from entering the normal local database.
 
-Run the suite with:
+HTTP responses are mocked in success and failure tests so that outcomes do not depend on external website availability.
+
+The test suite covers:
+
+- Dashboard and static-file delivery
+- Monitor creation and listing
+- Request validation
+- Monitor updates and deletion
+- Successful and unsuccessful simulated checks
+- Check-history persistence
+- Statistics
+- Rejection of local destinations
+- Rejection of non-standard ports
+- Rejection of mixed public/private DNS results
+- Verification that the outbound request uses the IP address returned by validation
+
+Run the suite using:
 
 ```bash
 python -m pytest -v
 ```
 
-## 10. Security Considerations
+## 11. Known Limitations
 
-The current project is intended for local development.
+This implementation is intended for learning and local development.
 
-The destination checks provide basic protection but are not a complete Server-Side Request Forgery (SSRF) defense. A production implementation must address DNS rebinding, time-of-check/time-of-use risks, redirects, address pinning, access controls, rate limits, and outbound-network restrictions.
+It does not currently provide:
 
-The application does not currently provide authentication or authorization. A publicly exposed deployment must not rely on the current safeguards alone.
+- User authentication or authorization
+- Production alert delivery
+- A durable task queue
+- Distributed scheduling
+- Database retention and archival policies
+- Complete protection against SSRF or DNS-related attacks
+- Production-scale monitoring concurrency controls
+- Comprehensive production observability
 
-## 11. Scaling Considerations
+The development server should not be exposed directly to the public internet.
 
-SQLite and an in-process scheduler are appropriate for a learning project and modest local workloads.
+## 12. Future Improvements
 
-A larger deployment would likely need:
+Potential extensions include:
 
-- A managed relational database
-- A persistent job queue
-- Dedicated monitoring workers
-- Concurrency and per-target rate controls
-- Durable alert delivery
-- Retention and archival policies
-- Authentication and role-based authorization
-- Centralized logging and health monitoring
-
-These changes would separate API availability from monitoring execution and make scheduled work more reliable across restarts.
+- Authentication and role-based permissions
+- Email and webhook alerts
+- SSL certificate-expiration alerts
+- Configurable incident thresholds
+- Stronger network egress controls
+- Concurrency and rate limiting
+- Historical uptime reports
+- Database migrations and retention policies
+- GitHub Actions automated testing
+- Production deployment and monitoring

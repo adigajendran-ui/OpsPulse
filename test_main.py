@@ -1,16 +1,16 @@
 
-"""Automated tests for the OpsPulse API.
+"""Automated tests for OpsPulse.
 
-Run with:
+Run:
     python -m pytest -v
 
-Each test uses an isolated temporary SQLite database.
-Website requests are mocked unless the test intentionally
-checks the private-network safety guard.
+Every test uses an isolated temporary SQLite database.
+HTTP responses are mocked except where the test explicitly
+checks that unsafe destinations are rejected before connecting.
 """
 
 import asyncio
-from types import SimpleNamespace
+import socket
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,13 +20,11 @@ import main as main_module
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    """Start the app with a fresh database and idle scheduler."""
+    """Run the application with a temporary database and idle scheduler."""
 
-    # Never use the real dashboard database during tests.
     test_database = tmp_path / "opspulse_test.db"
     monkeypatch.setattr(main_module, "DB_PATH", test_database)
 
-    # Prevent automatic checks from racing with individual tests.
     async def idle_scheduler():
         await asyncio.Event().wait()
 
@@ -36,7 +34,6 @@ def client(tmp_path, monkeypatch):
         idle_scheduler,
     )
 
-    # Using the context manager starts and stops the app lifespan.
     with TestClient(main_module.app) as test_client:
         yield test_client
 
@@ -47,7 +44,7 @@ def create_monitor(
     url="https://example.com",
     interval_seconds=60,
 ):
-    """Create a monitor and return its response object."""
+    """Create a monitor and return its JSON representation."""
 
     response = client.post(
         "/api/monitors",
@@ -63,51 +60,26 @@ def create_monitor(
 
 
 def install_fake_http_client(monkeypatch, status_code):
-    """Make run_check receive a predictable HTTP response."""
+    """Simulate destination validation and HTTP responses."""
 
-    class FakeResponse:
-        def __init__(self, code):
-            self.status_code = code
-
-    class FakeHTTPClient:
-        def __init__(self, code):
-            self.code = code
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc_value, traceback):
-            return False
-
-        def get(self, url):
-            return FakeResponse(self.code)
-
-    # Bypass DNS/network checks only for these mocked HTTP tests.
     monkeypatch.setattr(
         main_module,
         "validate_public_destination",
-        lambda url: None,
+        lambda url: "93.184.216.34",
     )
-
-    # Replace the HTTP client used by main.py, while leaving
-    # FastAPI's own TestClient untouched.
-    original_httpx = main_module.httpx
 
     monkeypatch.setattr(
         main_module,
-        "httpx",
-        SimpleNamespace(
-            Client=lambda **kwargs: FakeHTTPClient(status_code),
-            TimeoutException=original_httpx.TimeoutException,
-            HTTPError=original_httpx.HTTPError,
-        ),
+        "fetch_status_code_pinned",
+        lambda url, pinned_ip: status_code,
     )
 
 
 def test_dashboard_and_health_endpoints_work(client):
-    """The app serves the interface, assets, and health endpoint."""
+    """The dashboard, assets, and health endpoint are served."""
 
     home = client.get("/")
+
     assert home.status_code == 200
     assert "OpsPulse" in home.text
 
@@ -118,6 +90,7 @@ def test_dashboard_and_health_endpoints_work(client):
     assert javascript.status_code == 200
 
     health = client.get("/api/health")
+
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
     assert health.json()["database"] == "ok"
@@ -201,7 +174,6 @@ def test_monitor_can_be_updated_and_paused(client):
     assert updated["active"] is False
     assert updated["interval_seconds"] == 300
 
-    # Resume the monitor.
     response = client.patch(
         f"/api/monitors/{monitor['id']}",
         json={"active": True},
@@ -211,10 +183,7 @@ def test_monitor_can_be_updated_and_paused(client):
     assert response.json()["monitor"]["active"] is True
 
 
-def test_successful_check_is_saved_in_history(
-    client,
-    monkeypatch,
-):
+def test_successful_check_is_saved_in_history(client, monkeypatch):
     monitor = create_monitor(client)
     install_fake_http_client(monkeypatch, status_code=200)
 
@@ -256,7 +225,6 @@ def test_failed_http_response_is_saved(client, monkeypatch):
     assert result["status_code"] == 503
     assert result["error"] == "HTTP 503"
 
-    # The latest status should now reflect the failed check.
     monitor_response = client.get(
         f"/api/monitors/{monitor['id']}"
     )
@@ -294,12 +262,12 @@ def test_dashboard_statistics_include_check_results(
 
 
 def test_localhost_is_rejected_by_safety_guard(client):
-    """The checker must not contact loopback addresses."""
+    """Loopback destinations are rejected without making a request."""
 
     monitor = create_monitor(
         client,
         name="Local Test",
-        url="http://127.0.0.1:8000",
+        url="http://127.0.0.1/",
     )
 
     response = client.post(
@@ -329,14 +297,12 @@ def test_monitor_can_be_deleted(client):
 
     assert response.status_code == 200
 
-    # The monitor should no longer exist.
     response = client.get(
         f"/api/monitors/{monitor['id']}"
     )
 
     assert response.status_code == 404
 
-    # Its associated history endpoint should also be unavailable.
     response = client.get(
         f"/api/monitors/{monitor['id']}/checks"
     )
@@ -359,3 +325,105 @@ def test_manual_check_of_missing_monitor_returns_404(client):
     response = client.post("/api/monitors/999999/check")
 
     assert response.status_code == 404
+
+
+def test_nonstandard_port_is_rejected(client):
+    """Only standard HTTP and HTTPS ports are permitted."""
+
+    monitor = create_monitor(
+        client,
+        name="Custom Port Website",
+        url="https://example.com:8443",
+    )
+
+    response = client.post(
+        f"/api/monitors/{monitor['id']}/check"
+    )
+
+    assert response.status_code == 200
+
+    result = response.json()["check"]
+
+    assert result["success"] is False
+    assert "standard HTTP port 80" in result["error"]
+
+
+def test_mixed_public_and_private_dns_answers_are_rejected(
+    client,
+    monkeypatch,
+):
+    """One private answer causes the full DNS result to be rejected."""
+
+    monitor = create_monitor(
+        client,
+        name="Mixed DNS Website",
+        url="http://example.com/",
+    )
+
+    fake_dns_results = [
+        (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            "",
+            ("93.184.216.34", 80),
+        ),
+        (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            "",
+            ("127.0.0.1", 80),
+        ),
+    ]
+
+    monkeypatch.setattr(
+        main_module.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: fake_dns_results,
+    )
+
+    response = client.post(
+        f"/api/monitors/{monitor['id']}/check"
+    )
+
+    assert response.status_code == 200
+
+    result = response.json()["check"]
+
+    assert result["success"] is False
+    assert "publicly routable IP addresses" in result["error"]
+
+
+def test_check_uses_the_validated_ip(client, monkeypatch):
+    """The outbound request uses the IP returned by validation."""
+
+    monitor = create_monitor(client)
+
+    observed = {}
+
+    monkeypatch.setattr(
+        main_module,
+        "validate_public_destination",
+        lambda url: "93.184.216.34",
+    )
+
+    def fake_fetch(url, pinned_ip):
+        observed["url"] = url
+        observed["ip"] = pinned_ip
+        return 200
+
+    monkeypatch.setattr(
+        main_module,
+        "fetch_status_code_pinned",
+        fake_fetch,
+    )
+
+    response = client.post(
+        f"/api/monitors/{monitor['id']}/check"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["check"]["success"] is True
+    assert observed["url"] == "https://example.com"
+    assert observed["ip"] == "93.184.216.34"

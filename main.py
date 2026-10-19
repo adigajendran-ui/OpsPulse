@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import ipaddress
 import logging
 import socket
 import sqlite3
+import ssl
 import time
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
@@ -13,7 +15,6 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
-import httpx
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -63,7 +64,7 @@ def get_db() -> Iterator[sqlite3.Connection]:
 
 
 def initialize_database() -> None:
-    """Create tables and indexes when the app starts."""
+    """Create tables and indexes if they do not exist."""
 
     with get_db() as connection:
         connection.execute(
@@ -123,11 +124,11 @@ def initialize_database() -> None:
 
 
 # ============================================================
-# 3. URL VALIDATION AND SAFETY
+# 3. URL VALIDATION AND OUTBOUND NETWORK SAFETY
 # ============================================================
 
 def validate_url_format(value: str) -> str:
-    """Validate URL syntax before a monitor is saved."""
+    """Validate URL syntax before a monitor is created."""
 
     value = value.strip()
 
@@ -136,8 +137,6 @@ def validate_url_format(value: str) -> str:
 
     try:
         parsed = urlsplit(value)
-
-        # Accessing port also validates malformed port values.
         _ = parsed.port
 
     except ValueError as exc:
@@ -153,8 +152,7 @@ def validate_url_format(value: str) -> str:
 
     if not parsed.hostname:
         raise ValueError(
-            "Enter a URL with a hostname, "
-            "such as https://example.com."
+            "Enter a URL containing a hostname."
         )
 
     if parsed.username is not None or parsed.password is not None:
@@ -162,39 +160,85 @@ def validate_url_format(value: str) -> str:
             "URLs containing usernames or passwords are not supported."
         )
 
+    if "%" in parsed.hostname:
+        raise ValueError(
+            "Scoped or percent-encoded hostnames are not supported."
+        )
+
     return value
 
 
-def validate_public_destination(url: str) -> None:
+def validate_public_destination(url: str) -> str:
     """
-    Reject local and private IP addresses.
+    Resolve and validate a URL's destination.
 
-    This is a safety measure to reduce the risk of a monitoring
-    request being used to access internal network resources.
+    Returns a validated IP address. The caller must connect to
+    this exact address instead of resolving the hostname again.
+
+    This is a security control, not a complete SSRF defense.
     """
-
-    parsed = urlsplit(url)
-    hostname = parsed.hostname
-
-    if not hostname:
-        raise ValueError("The URL does not contain a hostname.")
-
-    port = parsed.port or (
-        443 if parsed.scheme.lower() == "https" else 80
-    )
-
-    resolved_addresses: set[str] = set()
 
     try:
-        # Check whether the hostname is already an IP address.
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        requested_port = parsed.port
+
+    except ValueError as exc:
+        raise ValueError("The URL contains invalid syntax.") from exc
+
+    scheme = parsed.scheme.lower()
+
+    if scheme not in {"http", "https"} or not hostname:
+        raise ValueError(
+            "Only valid HTTP and HTTPS URLs are allowed."
+        )
+
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(
+            "URLs containing credentials are not allowed."
+        )
+
+    if "%" in hostname:
+        raise ValueError(
+            "Scoped or percent-encoded hostnames are not supported."
+        )
+
+    default_port = 443 if scheme == "https" else 80
+
+    if requested_port not in (None, default_port):
+        raise ValueError(
+            "For safety, only standard HTTP port 80 and "
+            "HTTPS port 443 are allowed."
+        )
+
+    port = default_port
+
+    try:
         literal_ip = ipaddress.ip_address(hostname)
-        resolved_addresses.add(str(literal_ip))
+        addresses = [str(literal_ip)]
 
     except ValueError:
-        # Otherwise resolve the hostname through DNS.
+        try:
+            hostname_ascii = hostname.encode("idna").decode("ascii").lower()
+
+        except UnicodeError as exc:
+            raise ValueError("The hostname is invalid.") from exc
+
+        normalized_hostname = hostname_ascii.rstrip(".")
+
+        if (
+            normalized_hostname == "localhost"
+            or normalized_hostname.endswith(
+                (".localhost", ".local", ".internal", ".test")
+            )
+        ):
+            raise ValueError(
+                "Local and internal hostnames are not allowed."
+            )
+
         try:
             results = socket.getaddrinfo(
-                hostname,
+                hostname_ascii,
                 port,
                 type=socket.SOCK_STREAM,
             )
@@ -204,16 +248,21 @@ def validate_public_destination(url: str) -> None:
                 "The hostname could not be resolved."
             ) from exc
 
-        for result in results:
-            address = result[4][0].split("%")[0]
-            resolved_addresses.add(address)
+        addresses = list(
+            dict.fromkeys(
+                result[4][0].split("%", 1)[0]
+                for result in results
+            )
+        )
 
-    if not resolved_addresses:
+    if not addresses:
         raise ValueError(
             "The hostname did not resolve to an IP address."
         )
 
-    for address in resolved_addresses:
+    validated_addresses: list[str] = []
+
+    for address in addresses:
         try:
             ip = ipaddress.ip_address(address)
 
@@ -222,11 +271,175 @@ def validate_public_destination(url: str) -> None:
                 "The hostname resolved to an invalid IP address."
             ) from exc
 
+        # Reject the complete DNS answer set if even one answer
+        # is private, loopback, link-local, reserved, or non-global.
         if not ip.is_global:
             raise ValueError(
                 "For safety, OpsPulse only checks publicly "
                 "routable IP addresses."
             )
+
+        validated_addresses.append(str(ip))
+
+    # The request layer uses this exact address for the TCP socket.
+    return validated_addresses[0]
+
+
+class PinnedHTTPConnection(http.client.HTTPConnection):
+    """
+    HTTP connection that connects to a specific validated IP.
+    """
+
+    def __init__(
+        self,
+        hostname: str,
+        port: int,
+        connect_ip: str,
+        timeout: float,
+    ):
+        super().__init__(
+            host=hostname,
+            port=port,
+            timeout=timeout,
+        )
+        self.connect_ip = connect_ip
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection(
+            (self.connect_ip, self.port),
+            timeout=self.timeout,
+            source_address=self.source_address,
+        )
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """
+    HTTPS connection that pins the TCP destination.
+
+    The original hostname is retained for TLS SNI and certificate
+    hostname validation.
+    """
+
+    def __init__(
+        self,
+        hostname: str,
+        port: int,
+        connect_ip: str,
+        timeout: float,
+    ):
+        super().__init__(
+            host=hostname,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        )
+        self.connect_ip = connect_ip
+
+    def connect(self) -> None:
+        raw_socket = socket.create_connection(
+            (self.connect_ip, self.port),
+            timeout=self.timeout,
+            source_address=self.source_address,
+        )
+
+        try:
+            self.sock = self._context.wrap_socket(
+                raw_socket,
+                server_hostname=self.host,
+            )
+
+        except Exception:
+            raw_socket.close()
+            raise
+
+
+def fetch_status_code_pinned(
+    url: str,
+    pinned_ip: str,
+) -> int:
+    """
+    Send one GET request to an already validated destination.
+
+    Redirects are not followed. HTTPS certificate verification
+    uses the original hostname rather than the pinned IP.
+    """
+
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        requested_port = parsed.port
+
+    except ValueError as exc:
+        raise ValueError("The URL contains invalid syntax.") from exc
+
+    if not hostname:
+        raise ValueError("The URL does not contain a hostname.")
+
+    scheme = parsed.scheme.lower()
+
+    if scheme not in {"http", "https"}:
+        raise ValueError("Only HTTP and HTTPS are supported.")
+
+    default_port = 443 if scheme == "https" else 80
+    port = requested_port or default_port
+
+    hostname_ascii = hostname.encode("idna").decode("ascii")
+
+    try:
+        hostname_ip = ipaddress.ip_address(hostname_ascii)
+
+        host_header = (
+            f"[{hostname_ascii}]"
+            if hostname_ip.version == 6
+            else hostname_ascii
+        )
+
+    except ValueError:
+        host_header = hostname_ascii
+
+    if scheme == "https":
+        connection = PinnedHTTPSConnection(
+            hostname=hostname_ascii,
+            port=port,
+            connect_ip=pinned_ip,
+            timeout=CHECK_TIMEOUT_SECONDS,
+        )
+
+    else:
+        connection = PinnedHTTPConnection(
+            hostname=hostname_ascii,
+            port=port,
+            connect_ip=pinned_ip,
+            timeout=CHECK_TIMEOUT_SECONDS,
+        )
+
+    request_target = parsed.path or "/"
+
+    if parsed.query:
+        request_target += f"?{parsed.query}"
+
+    try:
+        connection.request(
+            "GET",
+            request_target,
+            headers={
+                "Host": host_header,
+                "User-Agent": "OpsPulse-Monitor/1.0",
+                "Accept": "*/*",
+                "Accept-Encoding": "identity",
+                "Connection": "close",
+            },
+        )
+
+        response = connection.getresponse()
+
+        try:
+            return response.status
+        finally:
+            response.close()
+
+    finally:
+        connection.close()
 
 
 # ============================================================
@@ -299,8 +512,9 @@ class MonitorUpdate(BaseModel):
 
 def run_check(monitor_id: int) -> dict[str, Any] | None:
     """
-    Check a website, record its response time, and update
-    the monitor's latest status.
+    Check a website, record the result, and update the monitor.
+
+    Both manual and scheduled checks use this function.
     """
 
     with get_db() as connection:
@@ -324,24 +538,14 @@ def run_check(monitor_id: int) -> dict[str, Any] | None:
     error: str | None = None
 
     try:
-        # Do not attempt a request to a private/local destination.
-        validate_public_destination(monitor["url"])
+        pinned_ip = validate_public_destination(monitor["url"])
 
-        # Redirects are deliberately not followed. This avoids
-        # automatically following a public URL into a private URL.
-        with httpx.Client(
-            timeout=CHECK_TIMEOUT_SECONDS,
-            follow_redirects=False,
-            headers={
-                "User-Agent": "OpsPulse-Monitor/1.0"
-            },
-        ) as client:
+        status_code = fetch_status_code_pinned(
+            monitor["url"],
+            pinned_ip,
+        )
 
-            response = client.get(monitor["url"])
-
-        status_code = response.status_code
-
-        # HTTP 2xx and 3xx responses count as reachable.
+        # Treat HTTP 2xx and 3xx responses as reachable.
         success = 200 <= status_code < 400
 
         if not success:
@@ -350,21 +554,25 @@ def run_check(monitor_id: int) -> dict[str, Any] | None:
     except ValueError as exc:
         error = str(exc)
 
-    except httpx.TimeoutException:
+    except TimeoutError:
         error = (
             f"Request timed out after "
             f"{CHECK_TIMEOUT_SECONDS:g} seconds."
         )
 
-    except httpx.HTTPError as exc:
-        error = f"HTTP request failed: {type(exc).__name__}."
+    except (OSError, http.client.HTTPException) as exc:
+        error = (
+            f"HTTP request failed: {type(exc).__name__}."
+        )
 
     except Exception as exc:
         logger.exception(
             "Unexpected error while checking monitor %s",
             monitor_id,
         )
-        error = f"Unexpected check error: {type(exc).__name__}."
+        error = (
+            f"Unexpected check error: {type(exc).__name__}."
+        )
 
     latency_ms = round(
         (time.perf_counter() - started) * 1000,
@@ -373,7 +581,6 @@ def run_check(monitor_id: int) -> dict[str, Any] | None:
 
     success_int = int(success)
 
-    # Save the result in the historical checks table.
     with get_db() as connection:
         connection.execute(
             """
@@ -397,7 +604,6 @@ def run_check(monitor_id: int) -> dict[str, Any] | None:
             ),
         )
 
-        # Update the latest status on the monitor.
         connection.execute(
             """
             UPDATE monitors
@@ -521,10 +727,11 @@ def fetch_monitor_or_404(
 
 async def background_scheduler() -> None:
     """
-    Find active monitors that are due for a check.
+    Find active monitors whose check intervals have elapsed.
 
-    The scheduler wakes up every five seconds. Each monitor's
-    configured interval determines when its next check is due.
+    This scheduler runs within this application process.
+    Production deployments need a dedicated and coordinated
+    scheduling design.
     """
 
     while True:
@@ -549,9 +756,7 @@ async def background_scheduler() -> None:
                     continue
 
                 try:
-                    last_time = datetime.fromisoformat(
-                        last_checked
-                    )
+                    last_time = datetime.fromisoformat(last_checked)
 
                     if last_time.tzinfo is None:
                         last_time = last_time.replace(
@@ -569,7 +774,6 @@ async def background_scheduler() -> None:
                         due_ids.append(int(row["id"]))
 
                 except (TypeError, ValueError):
-                    # Recover monitors with malformed timestamps.
                     due_ids.append(int(row["id"]))
 
             if due_ids:
@@ -605,7 +809,7 @@ async def background_scheduler() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize persistent storage and start the scheduler."""
+    """Initialize SQLite and start the background scheduler."""
 
     initialize_database()
 
@@ -630,7 +834,7 @@ app = FastAPI(
         "Add public websites, run checks, inspect response "
         "history, and view uptime statistics."
     ),
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -641,7 +845,7 @@ app = FastAPI(
 
 @app.get("/", tags=["general"], include_in_schema=False)
 def root() -> FileResponse:
-    """Serve the OpsPulse dashboard."""
+    """Serve the dashboard."""
     return FileResponse(APP_DIR / "static" / "index.html")
 
 
@@ -772,7 +976,6 @@ def list_monitors() -> dict[str, Any]:
 def create_monitor(
     payload: MonitorCreate,
 ) -> dict[str, Any]:
-
     with get_db() as connection:
         cursor = connection.execute(
             """
@@ -833,7 +1036,6 @@ def update_monitor(
     monitor_id: int,
     payload: MonitorUpdate,
 ) -> dict[str, Any]:
-
     changes = payload.model_dump(exclude_unset=True)
 
     if not changes:
@@ -841,6 +1043,12 @@ def update_monitor(
             status_code=400,
             detail="Provide at least one field to update.",
         )
+
+    allowed_columns = {
+        "name": "name",
+        "active": "active",
+        "interval_seconds": "interval_seconds",
+    }
 
     if any(value is None for value in changes.values()):
         raise HTTPException(
@@ -851,20 +1059,11 @@ def update_monitor(
             ),
         )
 
-    # Only predefined field names are allowed in the SQL.
-    allowed_columns = {
-        "name": "name",
-        "active": "active",
-        "interval_seconds": "interval_seconds",
-    }
-
     assignments: list[str] = []
     values: list[Any] = []
 
     for field_name, value in changes.items():
-        assignments.append(
-            f"{allowed_columns[field_name]} = ?"
-        )
+        assignments.append(f"{allowed_columns[field_name]} = ?")
 
         if field_name == "active":
             value = int(value)
@@ -874,10 +1073,7 @@ def update_monitor(
     values.append(monitor_id)
 
     with get_db() as connection:
-        fetch_monitor_or_404(
-            connection,
-            monitor_id,
-        )
+        fetch_monitor_or_404(connection, monitor_id)
 
         connection.execute(
             f"""
@@ -893,10 +1089,7 @@ def update_monitor(
             monitor_id,
         )
 
-        monitor = monitor_to_dict(
-            connection,
-            updated,
-        )
+        monitor = monitor_to_dict(connection, updated)
 
     return {
         "message": "Monitor updated.",
@@ -907,10 +1100,7 @@ def update_monitor(
 @app.delete("/api/monitors/{monitor_id}", tags=["monitors"])
 def delete_monitor(monitor_id: int) -> dict[str, Any]:
     with get_db() as connection:
-        fetch_monitor_or_404(
-            connection,
-            monitor_id,
-        )
+        fetch_monitor_or_404(connection, monitor_id)
 
         connection.execute(
             "DELETE FROM monitors WHERE id = ?",
@@ -934,7 +1124,6 @@ def delete_monitor(monitor_id: int) -> dict[str, Any]:
 def check_monitor_now(
     monitor_id: int,
 ) -> dict[str, Any]:
-
     result = run_check(monitor_id)
 
     if result is None:
@@ -949,10 +1138,7 @@ def check_monitor_now(
             monitor_id,
         )
 
-        monitor = monitor_to_dict(
-            connection,
-            row,
-        )
+        monitor = monitor_to_dict(connection, row)
 
     return {
         "monitor": monitor,
@@ -973,12 +1159,8 @@ def list_monitor_checks(
         description="Maximum number of results (1–200)",
     ),
 ) -> dict[str, Any]:
-
     with get_db() as connection:
-        fetch_monitor_or_404(
-            connection,
-            monitor_id,
-        )
+        fetch_monitor_or_404(connection, monitor_id)
 
         rows = connection.execute(
             """
@@ -1017,7 +1199,11 @@ def list_monitor_checks(
         "checks": checks,
     }
 
-# Serve the dashboard's CSS and JavaScript files.
+
+# ============================================================
+# 14. STATIC FRONTEND ASSETS
+# ============================================================
+
 app.mount(
     "/static",
     StaticFiles(directory=APP_DIR / "static"),
