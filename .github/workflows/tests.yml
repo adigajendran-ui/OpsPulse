@@ -1,3 +1,4 @@
+
 name: OpsPulse CI
 
 on:
@@ -13,8 +14,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Tests (Python ${{ matrix.python-version }})
+  quality-and-tests:
+    name: Quality checks (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -40,6 +41,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Run automated tests
+      - name: Lint backend code
         run: |
-          python -m pytest -v
+          python -m ruff check main.py
+
+      - name: Run tests and generate coverage report
+        run: |
+          python -m pytest --cov=main --cov-report=term-missing --cov-report=xml --cov-report=markdown-append:$GITHUB_STEP_SUMMARY
