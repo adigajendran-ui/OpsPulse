@@ -47,4 +47,4 @@ jobs:
 
       - name: Run tests and generate coverage report
         run: |
-          python -m pytest --cov=main --cov-report=term-missing --cov-report=xml --cov-report=markdown-append:$GITHUB_STEP_SUMMARY
+          python -m pytest --cov=main --cov-report=term-missing --cov-report=xml --cov-report=markdown-append:$GITHUB_STEP_SUMMARY --cov-fail-under=85
