@@ -9,17 +9,17 @@ import socket
 import sqlite3
 import ssl
 import time
+from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
-
 
 # ============================================================
 # 1. CONFIGURATION
@@ -43,7 +43,7 @@ logger = logging.getLogger("opspulse")
 
 def utc_now() -> str:
     """Return the current UTC time in ISO-8601 format."""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 @contextmanager
@@ -645,7 +645,7 @@ def monitor_to_dict(
     """Build a monitor response, including 24-hour uptime."""
 
     cutoff = (
-        datetime.now(timezone.utc) - timedelta(hours=24)
+        datetime.now(UTC) - timedelta(hours=24)
     ).isoformat(timespec="seconds")
 
     counts = connection.execute(
@@ -745,7 +745,7 @@ async def background_scheduler() -> None:
                     """
                 ).fetchall()
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             due_ids: list[int] = []
 
             for row in rows:
@@ -760,7 +760,7 @@ async def background_scheduler() -> None:
 
                     if last_time.tzinfo is None:
                         last_time = last_time.replace(
-                            tzinfo=timezone.utc
+                            tzinfo=UTC
                         )
 
                     due = (
@@ -868,7 +868,7 @@ def health() -> dict[str, str]:
 @app.get("/api/stats", tags=["dashboard"])
 def get_stats() -> dict[str, Any]:
     cutoff = (
-        datetime.now(timezone.utc) - timedelta(hours=24)
+        datetime.now(UTC) - timedelta(hours=24)
     ).isoformat(timespec="seconds")
 
     with get_db() as connection:
