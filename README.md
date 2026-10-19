@@ -1,233 +1,225 @@
-
 # OpsPulse
 
-**A local-first website uptime monitoring and performance dashboard built with Python, FastAPI, SQLite, and JavaScript.**
+[![Tests](https://github.com/adigajendran-ui/OpsPulse/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/adigajendran-ui/OpsPulse/actions/workflows/tests.yml)
 
-OpsPulse lets developers monitor public websites, measure response times, review historical check results, and inspect availability from a dashboard.
+**A local-first website uptime monitoring and performance dashboard built with Python, FastAPI, SQLite, HTML, CSS, and JavaScript.**
 
-The project demonstrates full-stack development, REST API design, database persistence, background scheduling, automated testing, defensive network programming, and frontend integration.
+OpsPulse monitors website availability, records check results, and presents monitoring data through a web dashboard. The project emphasizes reliable backend behavior, automated testing, and safer outbound network requests.
+
+## Overview
+
+OpsPulse is a portfolio project designed to demonstrate practical backend development, API design, database integration, frontend development, testing, and continuous integration.
+
+Rather than relying on an external monitoring service, OpsPulse runs locally and stores monitoring data in SQLite.
 
 ## Features
 
-- **Website monitoring:** Add public HTTP and HTTPS endpoints.
-- **Response-time tracking:** Measure and record request latency.
-- **Historical check results:** Store timestamps, status codes, outcomes, and errors.
-- **Automatic checks:** Recheck active monitors according to configured intervals.
-- **Monitor management:** Create, view, update, pause, resume, and delete monitors.
-- **Uptime statistics:** Calculate availability from recorded checks.
-- **Interactive dashboard:** View monitor status, response-time history, and recent activity.
-- **Search and filtering:** Find monitors by name, URL, or status.
-- **REST API:** Manage monitors through documented HTTP endpoints.
-- **Automated tests:** Verify important API and monitoring behavior with pytest.
-- **Local persistence:** Use SQLite without running a separate database server.
-- **Outbound request safeguards:** Validate DNS results, reject non-global addresses, restrict ports, and pin connections to a validated IP.
+- **Website availability monitoring** — perform checks against configured websites and inspect their results.
+- **Response-time measurement** — collect performance measurements during monitoring checks.
+- **Monitoring history** — store check results in a local SQLite database.
+- **Dashboard and statistics** — view monitoring information through a browser-based interface.
+- **Automated monitoring** — use the application's scheduler to run checks.
+- **Outbound request safeguards** — validate destinations before connecting to monitored websites.
+- **Automated quality checks** — run tests and linting locally and through GitHub Actions.
+- **API documentation** — inspect the FastAPI-generated documentation at `/docs` while the application is running.
 
 ## Technology Stack
 
-| Technology | Purpose |
+| Area | Technology |
 |---|---|
-| Python | Backend and monitoring logic |
-| FastAPI | REST API and application server |
-| SQLite | Monitor and check-history storage |
-| Python standard library | Pinned HTTP/HTTPS connections |
-| HTML | Dashboard structure |
-| CSS | Responsive interface |
-| JavaScript | Dashboard interactions and API integration |
-| pytest | Automated testing |
-| Git | Version control |
-
-## Requirements
-
-- Python 3.12 or newer is recommended.
-- Visual Studio Code or another code editor.
-- Git for source control.
-- An internet connection for real checks against public websites.
+| Language | Python |
+| Backend framework | FastAPI |
+| ASGI server | Uvicorn |
+| Database | SQLite |
+| HTTP client | HTTPX |
+| Frontend | HTML, CSS, JavaScript |
+| Testing | Pytest, pytest-cov |
+| Code quality | Ruff |
+| Continuous integration | GitHub Actions |
 
 ## Getting Started
 
+### Prerequisites
+
+- Python 3.12 or 3.13
+- Git
+- A web browser
+
 ### 1. Clone the repository
 
-Replace the example repository URL with your actual GitHub repository URL.
+Replace the example URL with the URL of your GitHub repository.
 
-```bash
-git clone https://github.com/YOUR_USERNAME/OpsPulse.git
+```powershell
+git clone https://github.com/adigajendran-ui/OpsPulse.git
 cd OpsPulse
 ```
 
-If the project is already on your computer, open its existing folder instead of cloning it again.
-
 ### 2. Create a virtual environment
 
-**Windows PowerShell:**
+On Windows using PowerShell:
 
 ```powershell
-py -m venv .venv
+py -3.12 -m venv .venv
+```
+
+Activate the environment:
+
+```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
-**macOS or Linux:**
+If PowerShell prevents activation because of its execution policy, run the following command in the current terminal and try activation again:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 ```
 
 ### 3. Install dependencies
 
-```bash
+```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 4. Run the application
+### 4. Start OpsPulse
 
-From the root directory, run:
-
-```bash
+```powershell
 python -m uvicorn main:app --reload
 ```
 
-Open the dashboard:
+Open the dashboard in your browser:
 
-http://127.0.0.1:8000
+**http://127.0.0.1:8000**
 
-Open interactive API documentation:
+To view the automatically generated API documentation, visit:
 
-http://127.0.0.1:8000/docs
+**http://127.0.0.1:8000/docs**
 
-Check application health:
+Keep the terminal running while using the application. Stop the development server by pressing `Ctrl+C`.
 
-http://127.0.0.1:8000/api/health
+## Running Tests
 
-Keep the terminal open while using the app. Press `Ctrl+C` to stop the server.
+OpsPulse uses Pytest to test backend behavior, including input validation and network request handling.
 
-The application creates its local SQLite database when it starts.
+Run the test suite:
 
-## Running Automated Tests
-
-With the virtual environment activated, run:
-
-```bash
-python -m pytest -v
+```powershell
+python -m pytest
 ```
 
-The tests use a temporary database and mocked website responses to keep test results repeatable and avoid modifying the normal local monitoring database.
+Run tests with a coverage report:
 
-The suite covers:
+```powershell
+python -m pytest --cov=main --cov-report=term-missing
+```
 
-- Dashboard and static-file delivery
-- Monitor creation and listing
-- Invalid URLs, names, and check intervals
-- Monitor updates and deletion
-- Successful and unsuccessful simulated HTTP checks
-- Historical check storage and dashboard statistics
-- Rejection of localhost and private-address destinations
-- Rejection of unsupported ports
-- Rejection of mixed public/private DNS results
-- Verification that outbound requests use the IP returned by validation
+The project enforces a minimum coverage threshold of **85%**. To run the same coverage threshold check locally:
 
-## API Overview
+```powershell
+python -m pytest --cov=main --cov-report=term-missing --cov-fail-under=85
+```
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | `/api/health` | Check application and database availability |
-| GET | `/api/stats` | Retrieve dashboard statistics |
-| GET | `/api/monitors` | List monitors |
-| POST | `/api/monitors` | Create a monitor |
-| GET | `/api/monitors/{id}` | Retrieve a monitor |
-| PATCH | `/api/monitors/{id}` | Update a monitor |
-| DELETE | `/api/monitors/{id}` | Delete a monitor and its history |
-| POST | `/api/monitors/{id}/check` | Trigger a manual check |
-| GET | `/api/monitors/{id}/checks` | Retrieve check history |
+Run Ruff to check code quality:
 
-Use `/docs` to explore and test API endpoints interactively.
+```powershell
+python -m ruff check main.py
+```
+
+All checks should pass before changes are merged into the `main` branch.
+
+## Continuous Integration
+
+GitHub Actions automatically runs quality checks when changes are pushed and when pull requests target `main`.
+
+The workflow includes:
+
+- Python 3.12 and Python 3.13 test runs.
+- Ruff linting.
+- Automated Pytest execution.
+- Test coverage reporting.
+- An enforced minimum coverage threshold of 85%.
+
+The CI badge at the top of this README links to the workflow results. A passing badge indicates that the latest relevant workflow run succeeded; it does not guarantee that every possible issue has been ruled out.
 
 ## Project Structure
 
 ```text
 OpsPulse/
-├── main.py
-├── test_main.py
-├── requirements.txt
-├── README.md
-├── .gitignore
-├── opspulse.db
+├── .github/
+│   └── workflows/
+│       └── tests.yml
 ├── docs/
 │   └── architecture.md
 ├── static/
-│   ├── index.html
-│   ├── styles.css
-│   └── app.js
-└── .venv/
+│   └── Frontend assets
+├── main.py
+├── test_main.py
+├── requirements.txt
+└── README.md
 ```
 
-`opspulse.db` and `.venv/` are local artifacts. They should not be committed to the repository.
+| File or directory | Purpose |
+|---|---|
+| `main.py` | FastAPI application, monitoring logic, persistence, and scheduling |
+| `test_main.py` | Automated backend tests |
+| `requirements.txt` | Python dependencies |
+| `static/` | HTML, CSS, JavaScript, and other frontend assets |
+| `docs/architecture.md` | Architecture and design documentation |
+| `.github/workflows/tests.yml` | GitHub Actions continuous integration workflow |
 
-## How Monitoring Works
+## Network Safety
 
-A check performs the following operations:
+Because OpsPulse makes outbound requests to monitored websites, validating destinations is an important part of the design.
 
-1. Load the monitor configuration.
-2. Validate the URL and destination.
-3. Resolve the hostname and reject any non-global DNS result.
-4. Connect to the selected validated IP address rather than resolving the hostname again during connection.
-5. For HTTPS, retain hostname verification for the TLS certificate.
-6. Make one GET request without following redirects.
-7. Record status, response time, success state, and any error.
-8. Update the monitor's latest result.
+The monitoring implementation includes safeguards such as:
 
-HTTP status codes from 200 through 399 count as reachable. Other responses are recorded as unsuccessful checks.
+- Validating target URLs and restricting supported ports.
+- Resolving hostnames and rejecting destinations that resolve to non-public IP addresses.
+- Connecting to a validated, pinned IP address while preserving the original hostname for HTTPS certificate verification.
+- Avoiding automatic redirect following, which helps prevent redirects from bypassing destination validation.
 
-The uptime percentage is based on recorded checks in the preceding 24 hours:
+These measures help reduce the risk of server-side request forgery (SSRF) and unsafe outbound connections. They are not a substitute for a full security review.
 
-```text
-Uptime = successful checks / total recorded checks * 100
-```
+**Deployment note:** OpsPulse is intended for local development and portfolio demonstration. Before exposing it to an untrusted network or deploying it publicly, review authentication, access controls, configuration, resource limits, and production deployment security.
 
-If there are no checks for the period, uptime is unavailable rather than zero.
+## Architecture
 
-## Security and Limitations
+At a high level, the application follows this flow:
 
-OpsPulse is currently a local development and learning project, not a hardened production service.
+1. A user interacts with the browser-based dashboard.
+2. The FastAPI backend handles application requests and monitoring operations.
+3. The monitoring logic validates destinations and performs outbound HTTP or HTTPS checks.
+4. Results and related monitoring data are stored in SQLite.
+5. The dashboard presents information derived from the stored data.
 
-- Destination checks reject non-global IP addresses, including private and loopback destinations.
-- Requests are restricted to standard HTTP port 80 and HTTPS port 443.
-- Connections use the validated IP address to reduce DNS-rebinding exposure.
-- HTTPS certificate verification uses the original hostname.
-- Redirects are not automatically followed.
-- The application does not currently implement user authentication or authorization.
-- The destination safeguards are not a complete Server-Side Request Forgery (SSRF) defense.
-- Public deployment would require further network egress restrictions, rate limits, concurrency controls, authorization, and independent security testing.
-- The scheduler runs inside the application process. Multiple application workers can cause duplicate monitoring loops.
-- Alert delivery, durable job queues, retention policies, and production observability are not implemented.
+For more detail, see [`docs/architecture.md`](docs/architecture.md).
 
-Do not expose the development server directly to the public internet.
+## Development Goals
 
-## Possible Future Improvements
+OpsPulse is an evolving project. Potential future improvements include:
 
-- Authentication and role-based authorization
-- Email or webhook alerts
-- SSL certificate-expiration alerts
-- Configurable alert thresholds
-- Improved DNS and outbound-network protections
-- Rate limits and concurrency controls
-- Historical uptime reports
-- Database retention and cleanup policies
-- GitHub Actions continuous integration
-- Production deployment with independent monitoring
+- Historical response-time and uptime charts.
+- Configurable alerting for downtime or degraded performance.
+- Improved monitoring summaries and reporting.
+- Additional integration and end-to-end tests.
+- More production-oriented configuration and deployment options.
 
-## Learning Goals
+These are planned enhancements, not claims about functionality already implemented.
 
-OpsPulse provides hands-on experience with:
+## Learning Outcomes
 
-- Frontend and backend development
-- REST API design
-- Relational database modeling
-- Background scheduling and external HTTP requests
-- Automated testing and regression checks
-- Input validation and defensive programming
-- Documentation and version control
+This project demonstrates practical experience with:
+
+- Building a Python web application with FastAPI.
+- Persisting application data in SQLite.
+- Implementing outbound HTTP and HTTPS monitoring.
+- Writing automated tests for success and failure scenarios.
+- Measuring and enforcing test coverage.
+- Maintaining code quality with Ruff.
+- Configuring CI with GitHub Actions.
+- Using Git branches and pull requests to manage changes.
+- Documenting software architecture and security considerations.
 
 ## License
 
-No license has been selected for this project yet.
+No license has been specified yet. Unless a license is added to the repository, reuse and redistribution are subject to the applicable default copyright rules.
