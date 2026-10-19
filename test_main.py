@@ -897,3 +897,138 @@ def test_https_connection_pins_ip_and_preserves_tls_hostname(
     assert observed["server_hostname"] == "example.com"
     assert observed["raw_socket"] is fake_raw_socket
     assert connection.sock is fake_wrapped_socket
+
+def test_monitor_history_endpoint_and_time_ranges(
+    tmp_path,
+    monkeypatch,
+):
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    import main
+
+    monkeypatch.setattr(
+        main,
+        "DB_PATH",
+        tmp_path / "history-test.db",
+    )
+
+    main.initialize_database()
+
+    now = datetime.now(UTC)
+    created_at = now.isoformat(timespec="seconds")
+
+    # Use an inactive monitor so the test never initiates outbound checks.
+    with main.get_db() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO monitors (
+                name,
+                url,
+                created_at,
+                active,
+                interval_seconds
+            )
+            VALUES (?, ?, ?, 0, 60)
+            """,
+            (
+                "History test",
+                "https://example.com",
+                created_at,
+            ),
+        )
+
+        monitor_id = cursor.lastrowid
+
+    with TestClient(main.app) as client:
+        # Empty history should return no uptime percentage, not 100%.
+        empty_response = client.get(
+            f"/api/monitors/{monitor_id}/history?hours=24"
+        )
+
+        assert empty_response.status_code == 200
+
+        empty_history = empty_response.json()
+
+        assert empty_history["total_checks"] == 0
+        assert empty_history["uptime_percent"] is None
+        assert all(
+            bucket["status"] == "no_data"
+            for bucket in empty_history["buckets"]
+        )
+
+        # Exercise the hourly and six-hour aggregation paths.
+        for hours, bucket_seconds in (
+            (168, 3600),
+            (720, 21600),
+        ):
+            response = client.get(
+                f"/api/monitors/{monitor_id}/history?hours={hours}"
+            )
+
+            assert response.status_code == 200
+            assert response.json()["bucket_seconds"] == bucket_seconds
+
+        # Place four results in the past so they fit inside one day.
+        current_bucket = (
+            int(now.timestamp()) // 900
+        ) * 900
+
+        base = current_bucket - 10 * 900
+
+        samples = [
+            (base + 120, 200, 120.0, 1, None),
+            (base + 180, 503, 180.0, 0, "HTTP 503"),
+            (base + 3 * 900 + 120, 200, 95.0, 1, None),
+            (base + 5 * 900 + 120, 503, 210.0, 0, "HTTP 503"),
+        ]
+
+        with main.get_db() as connection:
+            for epoch, status_code, latency, success, error in samples:
+                checked_at = datetime.fromtimestamp(
+                    epoch,
+                    UTC,
+                ).isoformat(timespec="seconds")
+
+                connection.execute(
+                    """
+                    INSERT INTO checks (
+                        monitor_id,
+                        checked_at,
+                        status_code,
+                        latency_ms,
+                        success,
+                        error
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        monitor_id,
+                        checked_at,
+                        status_code,
+                        latency,
+                        success,
+                        error,
+                    ),
+                )
+
+        response = client.get(
+            f"/api/monitors/{monitor_id}/history?hours=24"
+        )
+
+        assert response.status_code == 200
+
+        history = response.json()
+
+        assert history["total_checks"] == 4
+        assert history["successful_checks"] == 2
+        assert history["failed_checks"] == 2
+        assert history["uptime_percent"] == 50.0
+
+        statuses = {
+            bucket["status"]
+            for bucket in history["buckets"]
+        }
+
+        assert {"up", "down", "mixed", "no_data"} <= statuses

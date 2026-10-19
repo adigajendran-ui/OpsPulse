@@ -1209,3 +1209,151 @@ app.mount(
     StaticFiles(directory=APP_DIR / "static"),
     name="static",
 )
+
+@app.get(
+    "/api/monitors/{monitor_id}/history",
+    tags=["checks"],
+)
+def get_monitor_history(
+    monitor_id: int,
+    hours: int = Query(
+        default=24,
+        ge=1,
+        le=720,
+        description="History window in hours (1–720)",
+    ),
+) -> dict[str, Any]:
+    """Return aggregated uptime and response-time history."""
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=hours)
+
+    if hours <= 24:
+        bucket_seconds = 15 * 60
+    elif hours <= 24 * 7:
+        bucket_seconds = 60 * 60
+    else:
+        bucket_seconds = 6 * 60 * 60
+
+    cutoff_text = cutoff.isoformat(timespec="seconds")
+    now_text = now.isoformat(timespec="seconds")
+
+    with get_db() as connection:
+        fetch_monitor_or_404(connection, monitor_id)
+
+        rows = connection.execute(
+            """
+            SELECT
+                CAST(
+                    (
+                        CAST(strftime('%s', checked_at) AS INTEGER)
+                        / ?
+                    ) * ?
+                    AS INTEGER
+                ) AS bucket_epoch,
+                COUNT(*) AS total_checks,
+                COALESCE(SUM(success), 0) AS successful_checks,
+                AVG(latency_ms) AS average_latency_ms
+            FROM checks
+            WHERE monitor_id = ?
+              AND checked_at >= ?
+              AND checked_at <= ?
+            GROUP BY bucket_epoch
+            ORDER BY bucket_epoch ASC
+            """,
+            (
+                bucket_seconds,
+                bucket_seconds,
+                monitor_id,
+                cutoff_text,
+                now_text,
+            ),
+        ).fetchall()
+
+    bucket_rows = {
+        int(row["bucket_epoch"]): row
+        for row in rows
+        if row["bucket_epoch"] is not None
+    }
+
+    first_bucket = (
+        int(cutoff.timestamp()) // bucket_seconds
+    ) * bucket_seconds
+
+    last_bucket = (
+        int(now.timestamp()) // bucket_seconds
+    ) * bucket_seconds
+
+    buckets = []
+
+    for bucket_epoch in range(
+        first_bucket,
+        last_bucket + bucket_seconds,
+        bucket_seconds,
+    ):
+        row = bucket_rows.get(bucket_epoch)
+
+        total = int(row["total_checks"]) if row else 0
+        successful = int(row["successful_checks"]) if row else 0
+        failed = total - successful
+
+        if total == 0:
+            bucket_status = "no_data"
+            uptime_percent = None
+        elif successful == total:
+            bucket_status = "up"
+            uptime_percent = 100.0
+        elif successful == 0:
+            bucket_status = "down"
+            uptime_percent = 0.0
+        else:
+            bucket_status = "mixed"
+            uptime_percent = round(successful / total * 100, 2)
+
+        average_latency = (
+            round(float(row["average_latency_ms"]), 2)
+            if row and row["average_latency_ms"] is not None
+            else None
+        )
+
+        buckets.append(
+            {
+                "timestamp": datetime.fromtimestamp(
+                    bucket_epoch,
+                    UTC,
+                ).isoformat(timespec="seconds"),
+                "total_checks": total,
+                "successful_checks": successful,
+                "failed_checks": failed,
+                "uptime_percent": uptime_percent,
+                "average_latency_ms": average_latency,
+                "status": bucket_status,
+            }
+        )
+
+    total_checks = sum(
+        bucket["total_checks"] for bucket in buckets
+    )
+    successful_checks = sum(
+        bucket["successful_checks"] for bucket in buckets
+    )
+    failed_checks = total_checks - successful_checks
+
+    uptime_percent = (
+        round(successful_checks / total_checks * 100, 2)
+        if total_checks
+        else None
+    )
+
+    return {
+        "monitor_id": monitor_id,
+        "hours": hours,
+        "bucket_seconds": bucket_seconds,
+        "start_at": cutoff_text,
+        "end_at": now_text,
+        "total_checks": total_checks,
+        "successful_checks": successful_checks,
+        "failed_checks": failed_checks,
+        "uptime_percent": uptime_percent,
+        "buckets": buckets,
+    }

@@ -9,6 +9,8 @@ const state = {
     stats: null,
     selectedMonitorId: null,
     selectedChecks: [],
+    selectedHistoryHours: 24,
+    uptimeHistory: null,
     recentChecks: [],
     search: "",
     filter: "all",
@@ -739,8 +741,12 @@ async function loadSelectedChecks() {
 
     if (monitorId === null || monitorId === undefined) {
         state.selectedChecks = [];
+        state.uptimeHistory = null;
+
         renderLatencyChart([]);
         renderSnapshot();
+        renderUptimeHistory();
+
         return;
     }
 
@@ -755,10 +761,177 @@ async function loadSelectedChecks() {
         renderLatencyChart(state.selectedChecks);
         renderSnapshot();
     } catch (error) {
-        console.error("Could not load selected monitor history:", error);
+        console.error(
+            "Could not load selected monitor history:",
+            error
+        );
 
         state.selectedChecks = [];
         renderLatencyChart([]);
+    }
+
+    await loadUptimeHistory();
+}
+
+function renderUptimeHistory(errorMessage = "") {
+    const timeline = $("#uptime-timeline");
+
+    const uptimeValue = $("#history-uptime-value");
+    const checkCount = $("#history-check-count");
+    const failureCount = $("#history-failure-count");
+    const message = $("#uptime-history-message");
+
+    if (
+        state.selectedMonitorId === null ||
+        state.selectedMonitorId === undefined
+    ) {
+        uptimeValue.textContent = "—";
+        checkCount.textContent = "0";
+        failureCount.textContent = "0";
+        message.textContent = "Select a monitor to view uptime history.";
+
+        timeline.innerHTML = `
+            <div class="uptime-history-empty">
+                No monitor selected.
+            </div>
+        `;
+
+        $("#uptime-history-start").textContent = "Start of period";
+        $("#uptime-history-end").textContent = "End of period";
+        return;
+    }
+
+    if (errorMessage) {
+        uptimeValue.textContent = "—";
+        checkCount.textContent = "—";
+        failureCount.textContent = "—";
+        message.textContent = errorMessage;
+
+        timeline.innerHTML = `
+            <div class="uptime-history-empty">
+                History could not be loaded. Try refreshing the dashboard.
+            </div>
+        `;
+
+        return;
+    }
+
+    const history = state.uptimeHistory;
+
+    if (!history) {
+        uptimeValue.textContent = "—";
+        checkCount.textContent = "—";
+        failureCount.textContent = "—";
+        message.textContent = "Loading uptime history...";
+
+        timeline.innerHTML = `
+            <div class="uptime-history-empty">
+                Retrieving recorded check results...
+            </div>
+        `;
+
+        return;
+    }
+
+    uptimeValue.textContent = formatPercent(history.uptime_percent);
+    checkCount.textContent = String(history.total_checks ?? 0);
+    failureCount.textContent = String(history.failed_checks ?? 0);
+
+    const rangeLabel =
+        Number(history.hours) === 24
+            ? "the last 24 hours"
+            : Number(history.hours) === 168
+                ? "the last 7 days"
+                : "the last 30 days";
+
+    message.textContent = history.total_checks > 0
+        ? `${history.total_checks} recorded checks across ${rangeLabel}.`
+        : `No checks were recorded during ${rangeLabel}.`;
+
+    const buckets = history.buckets || [];
+
+    const statusClasses = {
+        up: "healthy",
+        down: "failed",
+        mixed: "mixed",
+        no_data: "no-data"
+    };
+
+    timeline.innerHTML = buckets.map((bucket) => {
+        const statusClass =
+            statusClasses[bucket.status] || "no-data";
+
+        const successful = Number(bucket.successful_checks || 0);
+        const failed = Number(bucket.failed_checks || 0);
+
+        const details =
+            `${formatDateTime(bucket.timestamp)}: ` +
+            `${successful} successful, ${failed} failed`;
+
+        const tooltip = bucket.total_checks > 0
+            ? `${details}; uptime ${formatPercent(bucket.uptime_percent)}`
+            : `${details}; no data`;
+
+        return `
+            <div
+                class="uptime-segment ${statusClass}"
+                role="listitem"
+                title="${escapeHTML(tooltip)}"
+                aria-label="${escapeHTML(tooltip)}">
+            </div>
+        `;
+    }).join("");
+
+    $("#uptime-history-start").textContent =
+        `From ${formatDateTime(history.start_at)}`;
+
+    $("#uptime-history-end").textContent =
+        `To ${formatDateTime(history.end_at)}`;
+}
+
+
+async function loadUptimeHistory() {
+    const monitorId = state.selectedMonitorId;
+
+    if (monitorId === null || monitorId === undefined) {
+        state.uptimeHistory = null;
+        renderUptimeHistory();
+        return;
+    }
+
+    // Avoid displaying an old monitor's history when the selection changes.
+    if (
+        state.uptimeHistory &&
+        (
+            Number(state.uptimeHistory.monitor_id) !== Number(monitorId) ||
+            Number(state.uptimeHistory.hours) !==
+                Number(state.selectedHistoryHours)
+        )
+    ) {
+        state.uptimeHistory = null;
+        renderUptimeHistory();
+    }
+
+    try {
+        const result = await api(
+            `/api/monitors/${Number(monitorId)}/history` +
+            `?hours=${Number(state.selectedHistoryHours)}`
+        );
+
+        // Ignore stale results if the user switched monitors mid-request.
+        if (Number(state.selectedMonitorId) !== Number(monitorId)) {
+            return;
+        }
+
+        state.uptimeHistory = result;
+        renderUptimeHistory();
+    } catch (error) {
+        console.error("Could not load uptime history:", error);
+
+        state.uptimeHistory = null;
+        renderUptimeHistory(
+            `Could not load uptime history: ${error.message}`
+        );
     }
 }
 
@@ -1262,6 +1435,14 @@ $("#monitor-search").addEventListener("input", (event) => {
 $("#status-filter").addEventListener("change", (event) => {
     state.filter = event.target.value;
     renderMonitors();
+});
+
+$("#uptime-range-select").addEventListener("change", async (event) => {
+    state.selectedHistoryHours = Number(event.target.value);
+    state.uptimeHistory = null;
+
+    renderUptimeHistory();
+    await loadUptimeHistory();
 });
 
 $("#selected-monitor-select").addEventListener("change", async (event) => {

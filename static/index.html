@@ -412,6 +412,87 @@
 
             </section>
 
+            <!-- Uptime history -->
+            <section class="panel uptime-history-panel" id="uptime-history">
+
+                <div class="panel-heading">
+                    <div>
+                        <div class="section-overline">AVAILABILITY ANALYTICS</div>
+                        <h2>Uptime history</h2>
+                        <p class="panel-description">
+                Review successful and failed checks over time.
+                        </p>
+                    </div>
+
+                    <label class="chart-select-wrap">
+                        <span class="sr-only">Select uptime history time range</span>
+                        <select
+                id="uptime-range-select"
+                aria-label="Select uptime history time range">
+                <option value="24">Last 24 hours</option>
+                <option value="168">Last 7 days</option>
+                <option value="720">Last 30 days</option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="uptime-history-metrics">
+                    <div class="uptime-history-metric">
+                        <span>UPTIME IN PERIOD</span>
+                        <strong id="history-uptime-value">—</strong>
+                    </div>
+
+                    <div class="uptime-history-metric">
+                        <span>TOTAL CHECKS</span>
+                        <strong id="history-check-count">0</strong>
+                    </div>
+
+                    <div class="uptime-history-metric">
+                        <span>FAILED CHECKS</span>
+                        <strong id="history-failure-count">0</strong>
+                    </div>
+                </div>
+
+                <p
+        class="uptime-history-message"
+        id="uptime-history-message"
+        aria-live="polite">
+        Loading uptime history...
+                </p>
+
+                <div
+        class="uptime-timeline"
+        id="uptime-timeline"
+        role="list"
+        aria-label="Chronological uptime history">
+                </div>
+
+                <div class="uptime-timeline-legend">
+                    <span>
+                        <i class="uptime-legend-key healthy"></i>
+            All checks successful
+                    </span>
+                    <span>
+                        <i class="uptime-legend-key failed"></i>
+            All checks failed
+                    </span>
+                    <span>
+                        <i class="uptime-legend-key mixed"></i>
+            Mixed results
+                    </span>
+                    <span>
+                        <i class="uptime-legend-key no-data"></i>
+            No checks
+                    </span>
+                </div>
+
+                <div class="uptime-timeline-footer">
+                    <span id="uptime-history-start">Start of period</span>
+                    <span id="uptime-history-end">End of period</span>
+                </div>
+
+            </section>
+
             <!-- Recent activity -->
             <section class="panel activity-panel" id="activity">
                 <div class="panel-heading">
